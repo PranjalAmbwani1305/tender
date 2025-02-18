@@ -1,7 +1,6 @@
 import streamlit as st
-from pinecone import PineconeClient
-from transformers import pipeline
 import pinecone
+from transformers import pipeline
 
 pinecone.init(api_key="your_pinecone_api_key", environment="us-west1-gcp")
 index_name = "tender-bot"
