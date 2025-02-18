@@ -1,5 +1,5 @@
-pinecone-client
-torch
-transformers
 streamlit
 fpdf
+pinecone-client
+sentence-transformers
+transformers
