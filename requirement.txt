@@ -1,5 +1,5 @@
 streamlit
-fpdf
+pinecone
 pinecone-client
 sentence-transformers
 transformers
