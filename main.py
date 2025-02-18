@@ -1,5 +1,6 @@
 import streamlit as st
 import pinecone
+from pinecone import Pinecone.PineconeClient
 from transformers import pipeline
 
 pinecone.init(api_key="your_pinecone_api_key", environment="us-west1-gcp")
