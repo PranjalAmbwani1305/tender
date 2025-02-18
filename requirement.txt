@@ -1,0 +1,5 @@
+pinecone-client
+torch
+transformers
+streamlit
+fpdf
