@@ -1,6 +1,5 @@
 import streamlit as st
 import pinecone
-import numpy as np
 from transformers import pipeline
 from sentence_transformers import SentenceTransformer
 
