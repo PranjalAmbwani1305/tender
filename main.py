@@ -1,21 +1,31 @@
 import streamlit as st
 import pinecone
-from transformers import pipeline
+from transformers import pipeline, AutoTokenizer, AutoModel
 from sentence_transformers import SentenceTransformer
 
-# Load Hugging Face models
-embedder = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")  # 768D embedding model
-generator = pipeline("text-generation", model="gpt2", max_length=250)  # GPT-2 for tender text
+# Load secrets from Streamlit
+api_key = st.secrets["pinecone"]["api_key"]
+env = st.secrets["pinecone"]["ENV"]
+index_name = st.secrets["pinecone"]["INDEX_NAME"]
+hf_token = st.secrets["huggingface"]["token"]
 
 # Initialize Pinecone
-pinecone.init(api_key=st.secrets["PINECONE_API_KEY"], environment="us-west1-gcp")
-index_name = "tender-docs"
+pinecone.init(api_key=api_key, environment=env)
 
 # Ensure Pinecone index exists
 if index_name not in pinecone.list_indexes():
     pinecone.create_index(index_name, dimension=768, metric="cosine")
 
 index = pinecone.Index(index_name)
+
+# Load Hugging Face models
+model_name = "distilbert-base-uncased"
+tokenizer = AutoTokenizer.from_pretrained(model_name, use_auth_token=hf_token)
+model = AutoModel.from_pretrained(model_name, use_auth_token=hf_token)
+
+# Load SentenceTransformer for embeddings
+embedder = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")  # 768D embedding model
+generator = pipeline("text-generation", model="gpt2", max_length=250)  # GPT-2 for tender text
 
 # Tender document structure
 TENDER_SECTIONS = [
