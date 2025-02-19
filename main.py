@@ -1,71 +1,118 @@
+import os
+import shutil
+import torch
 import streamlit as st
-from pinecone import Pinecone
-from transformers import pipeline
-from huggingface_hub import HfApi
-from sentence_transformers import SentenceTransformer
+from pathlib import Path
+import pinecone
+from transformers import AutoTokenizer, AutoModel
+from PyPDF2 import PdfReader
+import re
 
-# Load secrets from Streamlit
-pinecone_api_key = st.secrets["PINECONE"]["API_KEY"]
-hf_api_key = st.secrets["HUGGINGFACE"]["API_KEY"]
+# Initialize Streamlit secrets
+api_key = st.secrets["pinecone"]["api_key"]
+env = st.secrets["pinecone"]["ENV"]
+index_name = st.secrets["pinecone"]["INDEX_NAME"]
+hf_token = st.secrets["huggingface"]["token"]
 
 # Initialize Pinecone
-pc = Pinecone(api_key=pinecone_api_key)
-index = pc.Index("tender-bot")
+pinecone.init(api_key=api_key, environment=env)
+index = pinecone.Index(index_name)
 
-# Login to Hugging Face
-HfApi().set_access_token(hf_api_key)
+# Load Transformer Model
+model_name = "distilbert-base-uncased"
+tokenizer = AutoTokenizer.from_pretrained(model_name, token=hf_token)
+model = AutoModel.from_pretrained(model_name, token=hf_token)
 
-# Initialize text generation model
-generator = pipeline("text-generation", model="mistralai/Mistral-7B-Instruct")
+# Define Storage Folder
+storage_folder = "content_storage"
+os.makedirs(storage_folder, exist_ok=True)
 
-# Streamlit UI
-st.title("AI Tender Generator")
-st.write("Fill out the details below to generate your tender document.")
+def extract_text_sections(text):
+    """Extract structured sections dynamically from the PDF text."""
+    sections = []
+    lines = text.split("\n")
+    current_section = []
 
-# Input fields
-project_title = st.text_input("Project Title", placeholder="Enter project title")
-project_location = st.text_input("Project Location", placeholder="Enter location")
-project_duration = st.number_input("Project Duration (months)", min_value=1, step=1)
-project_budget = st.number_input("Project Budget", min_value=0, step=1000)
-project_description = st.text_area("Project Description", placeholder="Enter details about the project")
+    for line in lines:
+        line = line.strip()
 
-# Generate tender button
-if st.button("Generate Tender"):
-    if not project_title or not project_location or not project_description:
-        st.warning("Please fill in all required fields.")
-    else:
-        # Generate tender document
-        tender_content = generator(
-            f"Create a professional tender for {project_title} located at {project_location}. "
-            f"Description: {project_description}. Budget: {project_budget}.",
-            max_length=300
-        )
+        # Identify section headings
+        if re.match(r"^[A-Z ]{5,}$", line) or line.endswith(":"):
+            if current_section:
+                sections.append("\n".join(current_section))  # Store previous section
+            current_section = [f"**{line}**"]  # Start new section
+        else:
+            current_section.append(line)
 
-        tender_text = tender_content[0]['generated_text']
+    if current_section:
+        sections.append("\n".join(current_section))  # Store last section
 
-        # Format tender document
-        tender_document = f"""
-        **NOTICE INVITING TENDER**
+    return sections
 
-        **Project Title:** {project_title}  
-        **Location:** {project_location}  
-        **Duration:** {project_duration} months  
-        **Budget:** {project_budget}  
+def extract_text_from_pdf(file_path):
+    """Extracts text from a PDF file and formats it into structured sections."""
+    reader = PdfReader(file_path)
+    extracted_text = []
 
-        **Project Description:**  
-        {project_description}  
+    for page in reader.pages:
+        text = page.extract_text()
+        if text:
+            extracted_text.append(text)
 
-        **Tender Details:**  
-        {tender_text}  
+    return extract_text_sections("\n".join(extracted_text)) if extracted_text else []
 
-        Interested bidders may please download the Tender Document from our website: www.ourwebsite.com  
+def embed_text(text):
+    """Generate an embedding for the given text chunk."""
+    inputs = tokenizer(text, return_tensors="pt", padding=True, truncation=True)
+    with torch.no_grad():
+        embedding = model(**inputs).last_hidden_state.mean(dim=1).squeeze().tolist()
+    
+    return embedding
 
-        **I/C. General Manager**
-        """
+def store_in_pinecone(file_name, text_sections):
+    """Store extracted content in Pinecone with embeddings."""
+    for i, section in enumerate(text_sections):
+        chunk_id = f"{file_name}_chunk_{i}"
+        embedding = embed_text(section)
+        metadata = {"file_name": file_name, "chunk_id": i, "text": section}
 
-        # Display generated tender
-        st.subheader("Generated Tender Document")
-        st.code(tender_document, language="markdown")
+        expected_dim = len(embed_text("test"))  # Dynamically get model output size
+        if len(embedding) == expected_dim:
+            index.upsert([(chunk_id, embedding, metadata)])
+            st.write(f"✅ Stored {file_name} - section {i} in Pinecone.")
+        else:
+            st.error(f"❌ Invalid vector size: Expected {expected_dim}, got {len(embedding)}.")
 
-        # Provide download button
-        st.download_button("Download Tender Document", tender_document, file_name="tender_document.txt")
+def process_folder(folder_path):
+    """Process all PDFs in a folder and store structured content in Pinecone."""
+    st.write(f"📂 Processing folder: {folder_path}")
+
+    for file in Path(folder_path).rglob("*.pdf"):
+        st.write(f"📄 Processing {file.name}...")
+        structured_content = extract_text_from_pdf(file)
+
+        if structured_content:
+            store_in_pinecone(file.name, structured_content)
+        else:
+            st.warning(f"⚠️ No structured content found in {file.name}.")
+
+def main():
+    st.title("📌 Process & Store Structured PDF Data in Pinecone")
+
+    uploaded_zip = st.file_uploader("📁 Upload a ZIP folder containing PDFs", type=["zip"])
+
+    if uploaded_zip:
+        zip_path = os.path.join(storage_folder, uploaded_zip.name)
+        
+        with open(zip_path, "wb") as f:
+            f.write(uploaded_zip.getvalue())
+
+        folder_extract_path = os.path.join(storage_folder, "extracted_files")
+        shutil.unpack_archive(zip_path, folder_extract_path)
+        st.write(f"📂 Folder extracted to {folder_extract_path}")
+
+        process_folder(folder_extract_path)
+        st.success("✅ All structured data stored in Pinecone!")
+
+if __name__ == "__main__":
+    main()
